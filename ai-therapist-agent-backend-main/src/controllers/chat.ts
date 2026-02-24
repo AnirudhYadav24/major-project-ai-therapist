@@ -16,14 +16,18 @@ if (!process.env.OPENAI_API_KEY) {
   throw new Error("❌ OPENAI_API_KEY is missing in environment variables");
 }
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
 
 /* =====================================================
-   LIST CHAT SESSIONS  ✅ (FIXES GET /chat/sessions 404)
+   LIST ALL CHAT SESSIONS  ✅ (fixes GET /chat/sessions 404)
 ===================================================== */
 export const listChatSessions = async (req: Request, res: Response) => {
   try {
-    if (!req.user?.id) return res.status(401).json({ message: "Unauthorized" });
+    if (!req.user?.id) {
+      return res.status(401).json({ message: "Authentication required" });
+    }
 
     const userId = new Types.ObjectId(req.user.id);
 
@@ -33,8 +37,11 @@ export const listChatSessions = async (req: Request, res: Response) => {
 
     return res.json(sessions);
   } catch (error: any) {
-    logger.error("List sessions error:", error);
-    return res.status(500).json({ message: "Failed to load sessions" });
+    logger.error("List chat sessions error:", error);
+    return res.status(500).json({
+      message: "Failed to fetch chat sessions",
+      error: error?.message || "Unknown error",
+    });
   }
 };
 
@@ -43,11 +50,16 @@ export const listChatSessions = async (req: Request, res: Response) => {
 ===================================================== */
 export const createChatSession = async (req: Request, res: Response) => {
   try {
-    if (!req.user?.id) return res.status(401).json({ message: "Unauthorized" });
+    if (!req.user?.id) {
+      return res.status(401).json({ message: "Authentication required" });
+    }
 
     const userId = new Types.ObjectId(req.user.id);
     const user = await User.findById(userId);
-    if (!user) return res.status(404).json({ message: "User not found" });
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
 
     const session = await ChatSession.create({
       sessionId: uuidv4(),
@@ -75,13 +87,17 @@ export const createChatSession = async (req: Request, res: Response) => {
 ===================================================== */
 export const getChatSession = async (req: Request, res: Response) => {
   try {
-    if (!req.user?.id) return res.status(401).json({ message: "Unauthorized" });
+    if (!req.user?.id) {
+      return res.status(401).json({ message: "Authentication required" });
+    }
 
     const { sessionId } = req.params;
     const userId = new Types.ObjectId(req.user.id);
 
     const session = await ChatSession.findOne({ sessionId });
-    if (!session) return res.status(404).json({ message: "Session not found" });
+    if (!session) {
+      return res.status(404).json({ message: "Session not found" });
+    }
 
     if (session.userId.toString() !== userId.toString()) {
       return res.status(403).json({ message: "Forbidden" });
@@ -90,7 +106,10 @@ export const getChatSession = async (req: Request, res: Response) => {
     return res.json(session);
   } catch (error: any) {
     logger.error("Get session error:", error);
-    return res.status(500).json({ message: "Failed to fetch chat session" });
+    return res.status(500).json({
+      message: "Failed to fetch chat session",
+      error: error?.message || "Unknown error",
+    });
   }
 };
 
@@ -99,7 +118,9 @@ export const getChatSession = async (req: Request, res: Response) => {
 ===================================================== */
 export const sendMessage = async (req: Request, res: Response) => {
   try {
-    if (!req.user?.id) return res.status(401).json({ message: "Unauthorized" });
+    if (!req.user?.id) {
+      return res.status(401).json({ message: "Authentication required" });
+    }
 
     const { sessionId } = req.params;
     const { message } = req.body as { message?: string };
@@ -111,13 +132,15 @@ export const sendMessage = async (req: Request, res: Response) => {
     const userId = new Types.ObjectId(req.user.id);
 
     const session = await ChatSession.findOne({ sessionId });
-    if (!session) return res.status(404).json({ message: "Session not found" });
+    if (!session) {
+      return res.status(404).json({ message: "Session not found" });
+    }
 
     if (session.userId.toString() !== userId.toString()) {
       return res.status(403).json({ message: "Unauthorized" });
     }
 
-    // Optional: log to Inngest (does not affect response)
+    // Optional: Log to Inngest (won't block response if it fails)
     const event: InngestEvent = {
       name: "therapy/session.message",
       data: { message },
@@ -128,7 +151,7 @@ export const sendMessage = async (req: Request, res: Response) => {
       logger.warn("Inngest send failed (ignored):", e);
     }
 
-    // Build a short conversation context from last N messages
+    // Use last few messages as context
     const lastMessages = (session.messages || []).slice(-12).map((m) => ({
       role: m.role,
       content: m.content,
@@ -152,7 +175,7 @@ JSON format:
 }
 `;
 
-    const analysisResp = await openai.chat.completions.create({
+    const analysisCompletion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       temperature: 0.2,
       messages: [
@@ -162,7 +185,9 @@ JSON format:
       ],
     });
 
-    const analysisText = analysisResp.choices[0]?.message?.content?.trim() || "";
+    const analysisText =
+      analysisCompletion.choices[0]?.message?.content?.trim() || "";
+
     let analysis: any = {
       emotionalState: "neutral",
       themes: [],
@@ -185,15 +210,14 @@ JSON format:
 You are an empathetic AI therapist.
 
 Respond in a supportive, professional way.
-Keep it clear and practical.
-If the user seems at risk of self-harm, encourage reaching out to local emergency services or a trusted person.
+If user seems at risk of self-harm, encourage reaching out to local emergency services or a trusted person.
 
 User message: ${message}
 
 Analysis: ${JSON.stringify(analysis)}
 `;
 
-    const responseResp = await openai.chat.completions.create({
+    const responseCompletion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       temperature: 0.7,
       messages: [
@@ -204,10 +228,10 @@ Analysis: ${JSON.stringify(analysis)}
     });
 
     const aiResponse =
-      responseResp.choices[0]?.message?.content?.trim() ||
-      "I’m here with you. Can you tell me a little more about what you’re feeling right now?";
+      responseCompletion.choices[0]?.message?.content?.trim() ||
+      "I’m here with you. Can you tell me more about what you’re feeling?";
 
-    // Save user + assistant messages
+    // Save messages
     session.messages.push(
       { role: "user", content: message, timestamp: new Date() },
       {
@@ -250,13 +274,17 @@ Analysis: ${JSON.stringify(analysis)}
 ===================================================== */
 export const getChatHistory = async (req: Request, res: Response) => {
   try {
-    if (!req.user?.id) return res.status(401).json({ message: "Unauthorized" });
+    if (!req.user?.id) {
+      return res.status(401).json({ message: "Authentication required" });
+    }
 
     const { sessionId } = req.params;
     const userId = new Types.ObjectId(req.user.id);
 
     const session = await ChatSession.findOne({ sessionId });
-    if (!session) return res.status(404).json({ message: "Session not found" });
+    if (!session) {
+      return res.status(404).json({ message: "Session not found" });
+    }
 
     if (session.userId.toString() !== userId.toString()) {
       return res.status(403).json({ message: "Unauthorized" });
@@ -265,6 +293,9 @@ export const getChatHistory = async (req: Request, res: Response) => {
     return res.json(session.messages);
   } catch (error: any) {
     logger.error("History error:", error);
-    return res.status(500).json({ message: "Error fetching chat history" });
+    return res.status(500).json({
+      message: "Error fetching chat history",
+      error: error?.message || "Unknown error",
+    });
   }
 };
