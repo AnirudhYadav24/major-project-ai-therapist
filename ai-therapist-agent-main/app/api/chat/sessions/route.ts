@@ -2,12 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 
 const BACKEND_API_URL =
   process.env.BACKEND_API_URL ||
-  "https://ai-therapist-agent-backend.onrender.com";
+  "https://major-project-ai-therapist.onrender.com";
 
 export async function POST(req: NextRequest) {
   try {
     console.log("Creating new chat session...");
-    const authHeader = req.headers.get("Authorization");
+
+    const authHeader = req.headers.get("authorization"); // ✅ lowercase
 
     if (!authHeader) {
       return NextResponse.json(
@@ -20,20 +21,28 @@ export async function POST(req: NextRequest) {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: authHeader,
+        Authorization: authHeader, // must be: Bearer <JWT>
       },
     });
 
+    const raw = await response.text();
+
+    // ✅ Safely parse JSON
+    let data: any;
+    try {
+      data = raw ? JSON.parse(raw) : {};
+    } catch {
+      data = { error: raw };
+    }
+
     if (!response.ok) {
-      const error = await response.json();
-      console.error("Failed to create chat session:", error);
+      console.error("Failed to create chat session:", data);
       return NextResponse.json(
-        { error: error.error || "Failed to create chat session" },
+        { error: data?.message || data?.error || "Failed to create chat session" },
         { status: response.status }
       );
     }
 
-    const data = await response.json();
     console.log("Chat session created:", data);
     return NextResponse.json(data);
   } catch (error) {
