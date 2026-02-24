@@ -83,3 +83,9 @@ ignition/deployments/chain-31337
 
 # Private keys
 secrete.txt
+*.log
+combined.log
+node_modules
+.next
+.DS_Store
+
