@@ -3,3 +3,18 @@ node_modules/
 dist/
 build/
 .env
+ # node
+**/node_modules/
+**/.next/
+**/dist/
+**/build/
+
+# env
+**/.env
+**/.env.local
+
+# logs
+**/*.log
+**/combined.log
+**/error.log
+.DS_Store
