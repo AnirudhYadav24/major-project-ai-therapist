@@ -16,26 +16,38 @@ if (!process.env.OPENAI_API_KEY) {
   throw new Error("❌ OPENAI_API_KEY is missing in environment variables");
 }
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+/* =====================================================
+   LIST CHAT SESSIONS  ✅ (FIXES GET /chat/sessions 404)
+===================================================== */
+export const listChatSessions = async (req: Request, res: Response) => {
+  try {
+    if (!req.user?.id) return res.status(401).json({ message: "Unauthorized" });
+
+    const userId = new Types.ObjectId(req.user.id);
+
+    const sessions = await ChatSession.find({ userId })
+      .sort({ updatedAt: -1 })
+      .select("sessionId createdAt updatedAt startTime status");
+
+    return res.json(sessions);
+  } catch (error: any) {
+    logger.error("List sessions error:", error);
+    return res.status(500).json({ message: "Failed to load sessions" });
+  }
+};
 
 /* =====================================================
    CREATE CHAT SESSION
 ===================================================== */
-
 export const createChatSession = async (req: Request, res: Response) => {
   try {
-    if (!req.user?.id) {
-      return res.status(401).json({ message: "Unauthorized" });
-    }
+    if (!req.user?.id) return res.status(401).json({ message: "Unauthorized" });
 
     const userId = new Types.ObjectId(req.user.id);
     const user = await User.findById(userId);
-
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
-    }
+    if (!user) return res.status(404).json({ message: "User not found" });
 
     const session = await ChatSession.create({
       sessionId: uuidv4(),
@@ -50,7 +62,7 @@ export const createChatSession = async (req: Request, res: Response) => {
       sessionId: session.sessionId,
     });
   } catch (error: any) {
-    logger.error("Error creating chat session:", error);
+    logger.error("Create session error:", error);
     return res.status(500).json({
       message: "Error creating chat session",
       error: error?.message || "Unknown error",
@@ -59,54 +71,78 @@ export const createChatSession = async (req: Request, res: Response) => {
 };
 
 /* =====================================================
-   SEND MESSAGE
+   GET SINGLE CHAT SESSION
 ===================================================== */
-
-export const sendMessage = async (req: Request, res: Response) => {
+export const getChatSession = async (req: Request, res: Response) => {
   try {
-    if (!req.user?.id) {
-      return res.status(401).json({ message: "Unauthorized" });
-    }
+    if (!req.user?.id) return res.status(401).json({ message: "Unauthorized" });
 
     const { sessionId } = req.params;
-    const { message } = req.body;
+    const userId = new Types.ObjectId(req.user.id);
 
-    if (!message) {
+    const session = await ChatSession.findOne({ sessionId });
+    if (!session) return res.status(404).json({ message: "Session not found" });
+
+    if (session.userId.toString() !== userId.toString()) {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+
+    return res.json(session);
+  } catch (error: any) {
+    logger.error("Get session error:", error);
+    return res.status(500).json({ message: "Failed to fetch chat session" });
+  }
+};
+
+/* =====================================================
+   SEND MESSAGE
+===================================================== */
+export const sendMessage = async (req: Request, res: Response) => {
+  try {
+    if (!req.user?.id) return res.status(401).json({ message: "Unauthorized" });
+
+    const { sessionId } = req.params;
+    const { message } = req.body as { message?: string };
+
+    if (!message || !message.trim()) {
       return res.status(400).json({ message: "Message is required" });
     }
 
     const userId = new Types.ObjectId(req.user.id);
 
     const session = await ChatSession.findOne({ sessionId });
-    if (!session) {
-      return res.status(404).json({ message: "Session not found" });
-    }
+    if (!session) return res.status(404).json({ message: "Session not found" });
 
     if (session.userId.toString() !== userId.toString()) {
       return res.status(403).json({ message: "Unauthorized" });
     }
 
-    /* -----------------------------
-       Inngest Event
-    ----------------------------- */
-
+    // Optional: log to Inngest (does not affect response)
     const event: InngestEvent = {
       name: "therapy/session.message",
       data: { message },
     };
+    try {
+      await inngest.send(event);
+    } catch (e) {
+      logger.warn("Inngest send failed (ignored):", e);
+    }
 
-    await inngest.send(event);
+    // Build a short conversation context from last N messages
+    const lastMessages = (session.messages || []).slice(-12).map((m) => ({
+      role: m.role,
+      content: m.content,
+    }));
 
     /* -----------------------------
-       1️⃣ ANALYSIS (OpenAI)
+       1) ANALYSIS (JSON)
     ----------------------------- */
-
     const analysisPrompt = `
-Analyze this therapy message and return ONLY valid JSON.
+Return ONLY valid JSON.
 
-Message: ${message}
+User message: ${message}
 
-Required JSON structure:
+JSON format:
 {
   "emotionalState": "string",
   "themes": ["string"],
@@ -116,77 +152,67 @@ Required JSON structure:
 }
 `;
 
-    const analysisCompletion = await openai.chat.completions.create({
+    const analysisResp = await openai.chat.completions.create({
       model: "gpt-4o-mini",
+      temperature: 0.2,
       messages: [
-        { role: "system", content: "You return only valid JSON." },
+        { role: "system", content: "You output ONLY valid JSON." },
+        ...lastMessages,
         { role: "user", content: analysisPrompt },
       ],
-      temperature: 0.3,
     });
 
-    const analysisText =
-      analysisCompletion.choices[0]?.message?.content?.trim() || "";
-
-    let analysis: any;
+    const analysisText = analysisResp.choices[0]?.message?.content?.trim() || "";
+    let analysis: any = {
+      emotionalState: "neutral",
+      themes: [],
+      riskLevel: 0,
+      recommendedApproach: "supportive listening",
+      progressIndicators: [],
+    };
 
     try {
       const cleaned = analysisText.replace(/```json|```/g, "").trim();
       analysis = JSON.parse(cleaned);
-    } catch (err) {
+    } catch {
       logger.warn("⚠️ Failed to parse analysis JSON:", analysisText);
-
-      analysis = {
-        emotionalState: "neutral",
-        themes: [],
-        riskLevel: 0,
-        recommendedApproach: "supportive listening",
-        progressIndicators: [],
-      };
     }
 
     /* -----------------------------
-       2️⃣ RESPONSE GENERATION
+       2) RESPONSE
     ----------------------------- */
-
     const responsePrompt = `
 You are an empathetic AI therapist.
 
-User message:
-${message}
+Respond in a supportive, professional way.
+Keep it clear and practical.
+If the user seems at risk of self-harm, encourage reaching out to local emergency services or a trusted person.
 
-Analysis:
-${JSON.stringify(analysis)}
+User message: ${message}
 
-Provide a supportive, professional response.
+Analysis: ${JSON.stringify(analysis)}
 `;
 
-    const responseCompletion = await openai.chat.completions.create({
+    const responseResp = await openai.chat.completions.create({
       model: "gpt-4o-mini",
+      temperature: 0.7,
       messages: [
-        { role: "system", content: "You are a professional therapist." },
+        { role: "system", content: "You are a professional, empathetic therapist." },
+        ...lastMessages,
         { role: "user", content: responsePrompt },
       ],
-      temperature: 0.7,
     });
 
-    const response =
-      responseCompletion.choices[0]?.message?.content?.trim() ||
-      "I'm here to support you.";
+    const aiResponse =
+      responseResp.choices[0]?.message?.content?.trim() ||
+      "I’m here with you. Can you tell me a little more about what you’re feeling right now?";
 
-    /* -----------------------------
-       SAVE MESSAGES
-    ----------------------------- */
-
+    // Save user + assistant messages
     session.messages.push(
-      {
-        role: "user",
-        content: message,
-        timestamp: new Date(),
-      },
+      { role: "user", content: message, timestamp: new Date() },
       {
         role: "assistant",
-        content: response,
+        content: aiResponse,
         timestamp: new Date(),
         metadata: {
           analysis,
@@ -200,12 +226,8 @@ Provide a supportive, professional response.
 
     await session.save();
 
-    /* -----------------------------
-       RETURN RESPONSE
-    ----------------------------- */
-
     return res.json({
-      response,
+      response: aiResponse,
       analysis,
       metadata: {
         progress: {
@@ -214,10 +236,8 @@ Provide a supportive, professional response.
         },
       },
     });
-
   } catch (error: any) {
-    logger.error("🔥 Error in sendMessage:", error);
-
+    logger.error("SEND MESSAGE ERROR:", error);
     return res.status(500).json({
       message: "Error processing message",
       error: error?.message || "Unknown server error",
@@ -228,21 +248,15 @@ Provide a supportive, professional response.
 /* =====================================================
    GET CHAT HISTORY
 ===================================================== */
-
 export const getChatHistory = async (req: Request, res: Response) => {
   try {
-    if (!req.user?.id) {
-      return res.status(401).json({ message: "Unauthorized" });
-    }
+    if (!req.user?.id) return res.status(401).json({ message: "Unauthorized" });
 
     const { sessionId } = req.params;
     const userId = new Types.ObjectId(req.user.id);
 
     const session = await ChatSession.findOne({ sessionId });
-
-    if (!session) {
-      return res.status(404).json({ message: "Session not found" });
-    }
+    if (!session) return res.status(404).json({ message: "Session not found" });
 
     if (session.userId.toString() !== userId.toString()) {
       return res.status(403).json({ message: "Unauthorized" });
@@ -250,28 +264,7 @@ export const getChatHistory = async (req: Request, res: Response) => {
 
     return res.json(session.messages);
   } catch (error: any) {
-    logger.error("Error fetching chat history:", error);
+    logger.error("History error:", error);
     return res.status(500).json({ message: "Error fetching chat history" });
-  }
-};
-
-/* =====================================================
-   GET CHAT SESSION
-===================================================== */
-
-export const getChatSession = async (req: Request, res: Response) => {
-  try {
-    const { sessionId } = req.params;
-
-    const chatSession = await ChatSession.findOne({ sessionId });
-
-    if (!chatSession) {
-      return res.status(404).json({ error: "Chat session not found" });
-    }
-
-    return res.json(chatSession);
-  } catch (error: any) {
-    logger.error("Failed to get chat session:", error);
-    return res.status(500).json({ error: "Failed to get chat session" });
   }
 };
