@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 const BACKEND_API_URL =
   process.env.BACKEND_API_URL ||
-  "https://major-project-ai-therapist.onrender.com";
+  "https://ai-therapist-agent-backend.onrender.com";"
 
 /* ===============================
    GET → Chat History
