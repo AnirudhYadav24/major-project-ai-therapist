@@ -1,36 +1,34 @@
 import { NextRequest, NextResponse } from "next/server";
 
 const BACKEND_API_URL =
-  process.env.BACKEND_API_URL ||
-  "https://ai-therapist-agent-backend.onrender.com";
+  process.env.BACKEND_API_URL || "https://major-project-ai-therapist.onrender.com";
 
-  const token = req.headers.get("authorization"); // ✅ safer
-
-  if (!token) {
-    return NextResponse.json({ message: "No token provided" }, { status: 401 });
-  }
-
+export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
-    const { score, note } = body;
+    const authHeader =
+      req.headers.get("authorization") || req.headers.get("Authorization");
 
-    if (typeof score !== "number" || score < 0 || score > 100) {
-      return NextResponse.json({ error: "Invalid mood score" }, { status: 400 });
+    if (!authHeader) {
+      return NextResponse.json(
+        { error: "Authorization header is required" },
+        { status: 401 }
+      );
     }
 
-    const response = await fetch(`${API_URL}/api/mood`, {
+    const body = await req.json();
+
+    const response = await fetch(`${BACKEND_API_URL}/api/mood`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: token, // token should be: "Bearer <jwt>"
+        Authorization: authHeader,
       },
-      body: JSON.stringify({ score, note }),
+      body: JSON.stringify(body),
     });
 
     const raw = await response.text();
-
-    // ✅ try JSON, but don't crash if it's HTML
     let data: any;
+
     try {
       data = raw ? JSON.parse(raw) : {};
     } catch {
@@ -47,6 +45,9 @@ const BACKEND_API_URL =
     return NextResponse.json(data);
   } catch (error) {
     console.error("Error tracking mood:", error);
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    return NextResponse.json(
+      { error: "Internal server error" },
+      { status: 500 }
+    );
   }
 }
