@@ -1,5 +1,5 @@
-import "dotenv/config";
 import dotenv from "dotenv";
+
 dotenv.config(); // Load environment variables immediately
 
 import express from "express";
