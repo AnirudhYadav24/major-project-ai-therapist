@@ -1,4 +1,3 @@
-
 import { NextRequest, NextResponse } from "next/server";
 
 const BACKEND_API_URL =
@@ -9,7 +8,6 @@ export async function POST(
   { params }: { params: { sessionId: string } }
 ) {
   try {
-    // 🔐 Forward Authorization header to backend
     const authHeader = req.headers.get("authorization");
     if (!authHeader) {
       return NextResponse.json(
@@ -22,10 +20,7 @@ export async function POST(
     const { message } = await req.json();
 
     if (!message) {
-      return NextResponse.json(
-        { error: "Message is required" },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: "Message is required" }, { status: 400 });
     }
 
     const response = await fetch(
@@ -41,12 +36,7 @@ export async function POST(
     );
 
     const raw = await response.text();
-    let data: any;
-    try {
-      data = raw ? JSON.parse(raw) : {};
-    } catch {
-      data = { error: raw };
-    }
+    const data = raw ? JSON.parse(raw) : {};
 
     if (!response.ok) {
       return NextResponse.json(
@@ -56,11 +46,8 @@ export async function POST(
     }
 
     return NextResponse.json(data);
-  } catch (error) {
-    console.error("Error sending message:", error);
-    return NextResponse.json(
-      { error: "Failed to send message" },
-      { status: 500 }
-    );
+  } catch (e) {
+    console.error("Error sending message:", e);
+    return NextResponse.json({ error: "Failed to send message" }, { status: 500 });
   }
 }

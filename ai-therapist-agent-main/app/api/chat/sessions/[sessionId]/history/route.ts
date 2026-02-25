@@ -1,52 +1,48 @@
 import { NextRequest, NextResponse } from "next/server";
 
 const BACKEND_API_URL =
-  process.env.BACKEND_API_URL ||
-  "https://ai-therapist-agent-backend.onrender.com";
+  process.env.BACKEND_API_URL || "https://major-project-ai-therapist.onrender.com";
 
 export async function GET(
   req: NextRequest,
   { params }: { params: { sessionId: string } }
 ) {
   try {
+    const authHeader = req.headers.get("authorization");
+    if (!authHeader) {
+      return NextResponse.json(
+        { error: "Authorization header is required" },
+        { status: 401 }
+      );
+    }
+
     const { sessionId } = params;
-    console.log(`Getting chat history for session ${sessionId}`);
 
     const response = await fetch(
       `${BACKEND_API_URL}/chat/sessions/${sessionId}/history`,
       {
         method: "GET",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { Authorization: authHeader },
       }
     );
 
+    const raw = await response.text();
+    const data = raw ? JSON.parse(raw) : {};
+
     if (!response.ok) {
-      const error = await response.json();
-      console.error("Failed to get chat history:", error);
       return NextResponse.json(
-        { error: error.error || "Failed to get chat history" },
+        { error: data?.message || data?.error || "Failed to get chat history" },
         { status: response.status }
       );
     }
 
-    const data = await response.json();
-    console.log("Chat history retrieved successfully:", data);
-
-    // Format the response to match the frontend's expected format
-    const formattedMessages = data.map((msg: any) => ({
-      role: msg.role,
-      content: msg.content,
-      timestamp: msg.timestamp,
-    }));
-
-    return NextResponse.json(formattedMessages);
-  } catch (error) {
-    console.error("Error getting chat history:", error);
     return NextResponse.json(
-      { error: "Failed to get chat history" },
-      { status: 500 }
+      Array.isArray(data)
+        ? data.map((m: any) => ({ role: m.role, content: m.content, timestamp: m.timestamp }))
+        : data
     );
+  } catch (e) {
+    console.error("Error getting chat history:", e);
+    return NextResponse.json({ error: "Failed to get chat history" }, { status: 500 });
   }
 }

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 const BACKEND_API_URL =
   process.env.BACKEND_API_URL ||
-  "https://ai-therapist-agent-backend.onrender.com";"
+  "https://major-project-ai-therapist.onrender.com";
 
 /* ===============================
    GET → Chat History
@@ -85,7 +85,7 @@ export async function POST(
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: authHeader, // 🔑 REQUIRED
+          Authorization: authHeader,
         },
         body: JSON.stringify({ message }),
       }
