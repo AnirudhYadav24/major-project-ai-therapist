@@ -1,17 +1,25 @@
+
 import { NextRequest, NextResponse } from "next/server";
 
 const BACKEND_API_URL =
-  process.env.BACKEND_API_URL ||
-  "https://ai-therapist-agent-backend.onrender.com";
+  process.env.BACKEND_API_URL || "https://major-project-ai-therapist.onrender.com";
 
 export async function POST(
   req: NextRequest,
   { params }: { params: { sessionId: string } }
 ) {
   try {
+    // 🔐 Forward Authorization header to backend
+    const authHeader = req.headers.get("authorization");
+    if (!authHeader) {
+      return NextResponse.json(
+        { error: "Authorization header is required" },
+        { status: 401 }
+      );
+    }
+
     const { sessionId } = params;
-    const body = await req.json();
-    const { message } = body;
+    const { message } = await req.json();
 
     if (!message) {
       return NextResponse.json(
@@ -20,29 +28,33 @@ export async function POST(
       );
     }
 
-    console.log(`Sending message to session ${sessionId}:`, message);
     const response = await fetch(
       `${BACKEND_API_URL}/chat/sessions/${sessionId}/messages`,
       {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          Authorization: authHeader,
         },
         body: JSON.stringify({ message }),
       }
     );
 
+    const raw = await response.text();
+    let data: any;
+    try {
+      data = raw ? JSON.parse(raw) : {};
+    } catch {
+      data = { error: raw };
+    }
+
     if (!response.ok) {
-      const error = await response.json();
-      console.error("Failed to send message:", error);
       return NextResponse.json(
-        { error: error.error || "Failed to send message" },
+        { error: data?.message || data?.error || "Failed to send message" },
         { status: response.status }
       );
     }
 
-    const data = await response.json();
-    console.log("Message sent successfully:", data);
     return NextResponse.json(data);
   } catch (error) {
     console.error("Error sending message:", error);
