@@ -34,11 +34,9 @@ import { OceanWaves } from "@/components/games/ocean-waves";
 import { Badge } from "@/components/ui/badge";
 import {
   createChatSession,
-  sendChatMessage,
+  sendChatMessage, // alias -> sendMessage in lib/api/chat.ts
   getChatHistory,
-  ChatMessage,
-  getAllChatSessions,
-  ChatSession,
+  getAllChatSessions, // alias -> listChatSessions in lib/api/chat.ts
 } from "@/lib/api/chat";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { formatDistanceToNow } from "date-fns";
@@ -67,6 +65,31 @@ interface ApiResponse {
   };
 }
 
+/** ✅ UI message supports metadata + ISO timestamps (string) */
+type UIChatMessage = {
+  role: "user" | "assistant" | "system";
+  content: string;
+  timestamp?: string; // ✅ string, not Date
+  metadata?: {
+    analysis?: any;
+    technique?: string;
+    goal?: string;
+    progress?: any;
+  };
+};
+
+/** ✅ UI session type (backend can return _id, UI uses sessionId) */
+type UISession = {
+  _id?: string;
+  id?: string;
+  sessionId?: string;
+  title?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  lastMessage?: string;
+  messages?: UIChatMessage[];
+};
+
 const SUGGESTED_QUESTIONS = [
   { text: "How can I manage my anxiety better?" },
   { text: "I've been feeling overwhelmed lately" },
@@ -89,118 +112,44 @@ const glowAnimation = {
 
 const COMPLETION_THRESHOLD = 5;
 
+// ✅ Helpers
+const toISO = (v?: any) => {
+  const d = v ? new Date(v) : new Date();
+  return isNaN(d.getTime()) ? new Date().toISOString() : d.toISOString();
+};
+
+const getSessionId = (s: any): string => s?._id || s?.id || s?.sessionId || "new";
+
+const safeDateForDistance = (updatedAt?: any, createdAt?: any) => {
+  const d = new Date(updatedAt || createdAt || Date.now());
+  return isNaN(d.getTime()) ? new Date() : d;
+};
+
 export default function TherapyPage() {
   const params = useParams();
   const router = useRouter();
+
   const [message, setMessage] = useState("");
   const [isTyping, setIsTyping] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+
+  // ✅ Use UI types to avoid Date/string and metadata errors
+  const [messages, setMessages] = useState<UIChatMessage[]>([]);
   const [mounted, setMounted] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+
   const [stressPrompt, setStressPrompt] = useState<StressPrompt | null>(null);
   const [showActivity, setShowActivity] = useState(false);
   const [isChatPaused, setIsChatPaused] = useState(false);
   const [showNFTCelebration, setShowNFTCelebration] = useState(false);
   const [isCompletingSession, setIsCompletingSession] = useState(false);
+
   const [sessionId, setSessionId] = useState<string | null>(
-    params.sessionId as string
+    (params.sessionId as string) || "new"
   );
-  const [sessions, setSessions] = useState<ChatSession[]>([]);
 
-  const handleNewSession = async () => {
-    try {
-      setIsLoading(true);
-      const newSessionId = await createChatSession();
-      console.log("New session created:", newSessionId);
-
-      // Update sessions list immediately
-      const newSession: ChatSession = {
-        sessionId: newSessionId,
-        messages: [],
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      };
-
-      // Update all state in one go
-      setSessions((prev) => [newSession, ...prev]);
-      setSessionId(newSessionId);
-      setMessages([]);
-
-      // Update URL without refresh
-      window.history.pushState({}, "", `/therapy/${newSessionId}`);
-
-      // Force a re-render of the chat area
-      setIsLoading(false);
-    } catch (error) {
-      console.error("Failed to create new session:", error);
-      setIsLoading(false);
-    }
-  };
-
-  // Initialize chat session and load history
-  useEffect(() => {
-    const initChat = async () => {
-      try {
-        setIsLoading(true);
-        if (!sessionId || sessionId === "new") {
-          console.log("Creating new chat session...");
-          const newSessionId = await createChatSession();
-          console.log("New session created:", newSessionId);
-          setSessionId(newSessionId);
-          window.history.pushState({}, "", `/therapy/${newSessionId}`);
-        } else {
-          console.log("Loading existing chat session:", sessionId);
-          try {
-            const history = await getChatHistory(sessionId);
-            console.log("Loaded chat history:", history);
-            if (Array.isArray(history)) {
-              const formattedHistory = history.map((msg) => ({
-                ...msg,
-                timestamp: new Date(msg.timestamp),
-              }));
-              console.log("Formatted history:", formattedHistory);
-              setMessages(formattedHistory);
-            } else {
-              console.error("History is not an array:", history);
-              setMessages([]);
-            }
-          } catch (historyError) {
-            console.error("Error loading chat history:", historyError);
-            setMessages([]);
-          }
-        }
-      } catch (error) {
-        console.error("Failed to initialize chat:", error);
-        setMessages([
-          {
-            role: "assistant",
-            content:
-              "I apologize, but I'm having trouble loading the chat session. Please try refreshing the page.",
-            timestamp: new Date(),
-          },
-        ]);
-      } finally {
-        setIsLoading(false);
-      }
-    };
-
-    initChat();
-  }, [sessionId]);
-
-  // Load all chat sessions
-  useEffect(() => {
-    const loadSessions = async () => {
-      try {
-        const allSessions = await getAllChatSessions();
-        setSessions(allSessions);
-      } catch (error) {
-        console.error("Failed to load sessions:", error);
-      }
-    };
-
-    loadSessions();
-  }, [messages]);
+  // ✅ sessions can come in many shapes from backend
+  const [sessions, setSessions] = useState<UISession[]>([]);
 
   const scrollToBottom = () => {
     if (messagesEndRef.current) {
@@ -210,120 +159,47 @@ export default function TherapyPage() {
     }
   };
 
-  useEffect(() => {
-    if (!isTyping) {
-      scrollToBottom();
-    }
-  }, [messages, isTyping]);
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    console.log("Form submitted");
-    const currentMessage = message.trim();
-    console.log("Current message:", currentMessage);
-    console.log("Session ID:", sessionId);
-    console.log("Is typing:", isTyping);
-    console.log("Is chat paused:", isChatPaused);
-
-    if (!currentMessage || isTyping || isChatPaused || !sessionId) {
-      console.log("Submission blocked:", {
-        noMessage: !currentMessage,
-        isTyping,
-        isChatPaused,
-        noSessionId: !sessionId,
-      });
-      return;
-    }
-
-    setMessage("");
-    setIsTyping(true);
-
+  const loadSessions = async () => {
     try {
-      // Add user message
-      const userMessage: ChatMessage = {
-        role: "user",
-        content: currentMessage,
-        timestamp: new Date(),
-      };
-      setMessages((prev) => [...prev, userMessage]);
-
-      // Check for stress signals
-      const stressCheck = detectStressSignals(currentMessage);
-      if (stressCheck) {
-        setStressPrompt(stressCheck);
-        setIsTyping(false);
-        return;
-      }
-
-      console.log("Sending message to API...");
-      // Send message to API
-      const response = await sendChatMessage(sessionId, currentMessage);
-      console.log("Raw API response:", response);
-
-      // Parse the response if it's a string
-      const aiResponse =
-        typeof response === "string" ? JSON.parse(response) : response;
-      console.log("Parsed AI response:", aiResponse);
-
-      // Add AI response with metadata
-      const assistantMessage: ChatMessage = {
-        role: "assistant",
-        content:
-          aiResponse.response ||
-          aiResponse.message ||
-          "I'm here to support you. Could you tell me more about what's on your mind?",
-        timestamp: new Date(),
-        metadata: {
-          analysis: aiResponse.analysis || {
-            emotionalState: "neutral",
-            riskLevel: 0,
-            themes: [],
-            recommendedApproach: "supportive",
-            progressIndicators: [],
-          },
-          technique: aiResponse.metadata?.technique || "supportive",
-          goal: aiResponse.metadata?.currentGoal || "Provide support",
-          progress: aiResponse.metadata?.progress || {
-            emotionalState: "neutral",
-            riskLevel: 0,
-          },
-        },
-      };
-
-      console.log("Created assistant message:", assistantMessage);
-
-      // Add the message immediately
-      setMessages((prev) => [...prev, assistantMessage]);
-      setIsTyping(false);
-      scrollToBottom();
+      const all = await getAllChatSessions();
+      setSessions(Array.isArray(all) ? all : []);
     } catch (error) {
-      console.error("Error in chat:", error);
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          content:
-            "I apologize, but I'm having trouble connecting right now. Please try again in a moment.",
-          timestamp: new Date(),
-        },
-      ]);
-      setIsTyping(false);
+      console.error("Failed to load sessions:", error);
+      setSessions([]);
     }
   };
 
-  useEffect(() => {
-    setMounted(true);
-  }, []);
+  const handleNewSession = async () => {
+    try {
+      setIsLoading(true);
 
-  if (!mounted || isLoading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
-      </div>
-    );
-  }
+      const created = await createChatSession();
+      const newId = typeof created === "string" ? created : getSessionId(created);
 
-  const detectStressSignals = (message: string): StressPrompt | null => {
+      console.log("New session created:", newId);
+
+      // ✅ add a UI session entry (string timestamps)
+      const newSession: UISession = {
+        sessionId: newId,
+        title: "New Chat",
+        messages: [],
+        createdAt: toISO(),
+        updatedAt: toISO(),
+      };
+
+      setSessions((prev) => [newSession, ...prev]);
+      setSessionId(newId);
+      setMessages([]);
+
+      window.history.pushState({}, "", `/therapy/${newId}`);
+    } catch (error) {
+      console.error("Failed to create new session:", error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const detectStressSignals = (text: string): StressPrompt | null => {
     const stressKeywords = [
       "stress",
       "anxiety",
@@ -337,7 +213,7 @@ export default function TherapyPage() {
       "exhausted",
     ];
 
-    const lowercaseMsg = message.toLowerCase();
+    const lowercaseMsg = text.toLowerCase();
     const foundKeyword = stressKeywords.find((keyword) =>
       lowercaseMsg.includes(keyword)
     );
@@ -347,8 +223,7 @@ export default function TherapyPage() {
         {
           type: "breathing" as const,
           title: "Breathing Exercise",
-          description:
-            "Follow calming breathing exercises with visual guidance",
+          description: "Follow calming breathing exercises with visual guidance",
         },
         {
           type: "garden" as const,
@@ -376,17 +251,166 @@ export default function TherapyPage() {
     return null;
   };
 
+  // Initialize chat session and load history
+  useEffect(() => {
+    const initChat = async () => {
+      try {
+        setIsLoading(true);
+
+        // load sidebar sessions
+        await loadSessions();
+
+        if (!sessionId || sessionId === "new") {
+          console.log("Creating new chat session...");
+          const created = await createChatSession();
+          const newId = typeof created === "string" ? created : getSessionId(created);
+
+          console.log("New session created:", newId);
+          setSessionId(newId);
+          window.history.pushState({}, "", `/therapy/${newId}`);
+          setMessages([]);
+          return;
+        }
+
+        console.log("Loading existing chat session:", sessionId);
+
+        const history = await getChatHistory(sessionId);
+
+        if (Array.isArray(history)) {
+          const formattedHistory: UIChatMessage[] = history.map((msg: any) => ({
+            role: msg.role,
+            content: msg.content,
+            timestamp: msg.timestamp ? toISO(msg.timestamp) : toISO(),
+            metadata: msg.metadata,
+          }));
+
+          setMessages(formattedHistory);
+        } else {
+          setMessages([]);
+        }
+      } catch (error) {
+        console.error("Failed to initialize chat:", error);
+        setMessages([
+          {
+            role: "assistant",
+            content:
+              "I apologize, but I'm having trouble loading the chat session. Please try refreshing the page.",
+            timestamp: toISO(),
+          },
+        ]);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    initChat();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId]);
+
+  // Reload sessions when messages change (keeps sidebar updated)
+  useEffect(() => {
+    loadSessions();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages.length]);
+
+  useEffect(() => {
+    if (!isTyping) scrollToBottom();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, isTyping]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+
+    const currentMessage = message.trim();
+
+    if (!currentMessage || isTyping || isChatPaused || !sessionId) return;
+
+    setMessage("");
+    setIsTyping(true);
+
+    try {
+      // Add user message (ISO timestamp)
+      const userMessage: UIChatMessage = {
+        role: "user",
+        content: currentMessage,
+        timestamp: toISO(),
+      };
+      setMessages((prev) => [...prev, userMessage]);
+
+      // stress prompt
+      const stressCheck = detectStressSignals(currentMessage);
+      if (stressCheck) {
+        setStressPrompt(stressCheck);
+        setIsTyping(false);
+        return;
+      }
+
+      // Send message to API
+      const response = await sendChatMessage(sessionId, currentMessage);
+
+      const aiResponse = typeof response === "string" ? JSON.parse(response) : response;
+
+      const assistantMessage: UIChatMessage = {
+        role: "assistant",
+        content:
+          aiResponse?.response ||
+          aiResponse?.message ||
+          "I'm here to support you. Could you tell me more about what's on your mind?",
+        timestamp: toISO(),
+        metadata: {
+          analysis:
+            aiResponse?.analysis || {
+              emotionalState: "neutral",
+              riskLevel: 0,
+              themes: [],
+              recommendedApproach: "supportive",
+              progressIndicators: [],
+            },
+          technique: aiResponse?.metadata?.technique || "supportive",
+          goal: aiResponse?.metadata?.currentGoal || "Provide support",
+          progress:
+            aiResponse?.metadata?.progress || {
+              emotionalState: "neutral",
+              riskLevel: 0,
+            },
+        },
+      };
+
+      setMessages((prev) => [...prev, assistantMessage]);
+      setIsTyping(false);
+      scrollToBottom();
+    } catch (error) {
+      console.error("Error in chat:", error);
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content:
+            "I apologize, but I'm having trouble connecting right now. Please try again in a moment.",
+          timestamp: toISO(),
+        },
+      ]);
+      setIsTyping(false);
+    }
+  };
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
   const handleSuggestedQuestion = async (text: string) => {
-    if (!sessionId) {
-      const newSessionId = await createChatSession();
-      setSessionId(newSessionId);
-      router.push(`/therapy/${newSessionId}`);
+    if (!sessionId || sessionId === "new") {
+      const created = await createChatSession();
+      const newId = typeof created === "string" ? created : getSessionId(created);
+      setSessionId(newId);
+      router.push(`/therapy/${newId}`);
     }
 
     setMessage(text);
     setTimeout(() => {
-      const event = new Event("submit") as unknown as React.FormEvent;
-      handleSubmit(event);
+      // trigger submit safely
+      const fakeEvent = { preventDefault: () => {} } as unknown as React.FormEvent;
+      handleSubmit(fakeEvent);
     }, 0);
   };
 
@@ -403,26 +427,40 @@ export default function TherapyPage() {
   };
 
   const handleSessionSelect = async (selectedSessionId: string) => {
-    if (selectedSessionId === sessionId) return;
+    if (!selectedSessionId || selectedSessionId === sessionId) return;
 
     try {
       setIsLoading(true);
       const history = await getChatHistory(selectedSessionId);
+
       if (Array.isArray(history)) {
-        const formattedHistory = history.map((msg) => ({
-          ...msg,
-          timestamp: new Date(msg.timestamp),
+        const formattedHistory: UIChatMessage[] = history.map((msg: any) => ({
+          role: msg.role,
+          content: msg.content,
+          timestamp: msg.timestamp ? toISO(msg.timestamp) : toISO(),
+          metadata: msg.metadata,
         }));
         setMessages(formattedHistory);
-        setSessionId(selectedSessionId);
-        window.history.pushState({}, "", `/therapy/${selectedSessionId}`);
+      } else {
+        setMessages([]);
       }
+
+      setSessionId(selectedSessionId);
+      window.history.pushState({}, "", `/therapy/${selectedSessionId}`);
     } catch (error) {
       console.error("Failed to load session:", error);
     } finally {
       setIsLoading(false);
     }
   };
+
+  if (!mounted || isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
+      </div>
+    );
+  }
 
   return (
     <div className="relative max-w-7xl mx-auto px-4">
@@ -463,49 +501,53 @@ export default function TherapyPage() {
 
           <ScrollArea className="flex-1 p-4">
             <div className="space-y-4">
-              {sessions.map((session) => (
-                <div
-                  key={session.sessionId}
-                  className={cn(
-                    "p-3 rounded-lg text-sm cursor-pointer hover:bg-primary/5 transition-colors",
-                    session.sessionId === sessionId
-                      ? "bg-primary/10 text-primary"
-                      : "bg-secondary/10"
-                  )}
-                  onClick={() => handleSessionSelect(session.sessionId)}
-                >
-                  <div className="flex items-center gap-2 mb-1">
-                    <MessageSquare className="w-4 h-4" />
-                    <span className="font-medium">
-                      {session.messages[0]?.content.slice(0, 30) || "New Chat"}
-                    </span>
+              {sessions.map((session) => {
+                const sid = getSessionId(session);
+                const updated = safeDateForDistance(session.updatedAt, session.createdAt);
+
+                // keep your UI behavior but make it safe if backend doesn't send messages array
+                const msgArr = Array.isArray(session.messages) ? session.messages : [];
+                const title =
+                  session.title ||
+                  msgArr[0]?.content?.slice(0, 30) ||
+                  "New Chat";
+
+                const preview =
+                  msgArr[msgArr.length - 1]?.content ||
+                  session.lastMessage ||
+                  "No messages yet";
+
+                const count = msgArr.length;
+
+                return (
+                  <div
+                    key={sid}
+                    className={cn(
+                      "p-3 rounded-lg text-sm cursor-pointer hover:bg-primary/5 transition-colors",
+                      sid === sessionId
+                        ? "bg-primary/10 text-primary"
+                        : "bg-secondary/10"
+                    )}
+                    onClick={() => handleSessionSelect(sid)}
+                  >
+                    <div className="flex items-center gap-2 mb-1">
+                      <MessageSquare className="w-4 h-4" />
+                      <span className="font-medium">{title}</span>
+                    </div>
+
+                    <p className="line-clamp-2 text-muted-foreground">{preview}</p>
+
+                    <div className="flex items-center justify-between mt-2">
+                      <span className="text-xs text-muted-foreground">
+                        {count} messages
+                      </span>
+                      <span className="text-xs text-muted-foreground">
+                        {formatDistanceToNow(updated, { addSuffix: true })}
+                      </span>
+                    </div>
                   </div>
-                  <p className="line-clamp-2 text-muted-foreground">
-                    {session.messages[session.messages.length - 1]?.content ||
-                      "No messages yet"}
-                  </p>
-                  <div className="flex items-center justify-between mt-2">
-                    <span className="text-xs text-muted-foreground">
-                      {session.messages.length} messages
-                    </span>
-                    <span className="text-xs text-muted-foreground">
-                      {(() => {
-                        try {
-                          const date = new Date(session.updatedAt);
-                          if (isNaN(date.getTime())) {
-                            return "Just now";
-                          }
-                          return formatDistanceToNow(date, {
-                            addSuffix: true,
-                          });
-                        } catch (error) {
-                          return "Just now";
-                        }
-                      })()}
-                    </span>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </ScrollArea>
         </div>
@@ -592,9 +634,9 @@ export default function TherapyPage() {
             <div className="flex-1 overflow-y-auto scroll-smooth">
               <div className="max-w-3xl mx-auto">
                 <AnimatePresence initial={false}>
-                  {messages.map((msg) => (
+                  {messages.map((msg, index) => (
                     <motion.div
-                      key={msg.timestamp.toISOString()}
+                      key={`${msg.timestamp || "no-ts"}-${index}`}
                       initial={{ opacity: 0, y: 20 }}
                       animate={{ opacity: 1, y: 0 }}
                       transition={{ duration: 0.3 }}
@@ -617,12 +659,11 @@ export default function TherapyPage() {
                             </div>
                           )}
                         </div>
+
                         <div className="flex-1 space-y-2 overflow-hidden min-h-[2rem]">
                           <div className="flex items-center justify-between">
                             <p className="font-medium text-sm">
-                              {msg.role === "assistant"
-                                ? "AI Therapist"
-                                : "You"}
+                              {msg.role === "assistant" ? "AI Therapist" : "You"}
                             </p>
                             {msg.metadata?.technique && (
                               <Badge variant="secondary" className="text-xs">
@@ -630,9 +671,11 @@ export default function TherapyPage() {
                               </Badge>
                             )}
                           </div>
+
                           <div className="prose prose-sm dark:prose-invert leading-relaxed">
                             <ReactMarkdown>{msg.content}</ReactMarkdown>
                           </div>
+
                           {msg.metadata?.goal && (
                             <p className="text-xs text-muted-foreground mt-2">
                               Goal: {msg.metadata.goal}
@@ -661,6 +704,7 @@ export default function TherapyPage() {
                     </div>
                   </motion.div>
                 )}
+
                 <div ref={messagesEndRef} />
               </div>
             </div>
@@ -695,10 +739,11 @@ export default function TherapyPage() {
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && !e.shiftKey) {
                       e.preventDefault();
-                      handleSubmit(e);
+                      handleSubmit(e as any);
                     }
                   }}
                 />
+
                 <Button
                   type="submit"
                   size="icon"
@@ -714,7 +759,7 @@ export default function TherapyPage() {
                   disabled={isTyping || isChatPaused || !message.trim()}
                   onClick={(e) => {
                     e.preventDefault();
-                    handleSubmit(e);
+                    handleSubmit(e as any);
                   }}
                 >
                   <Send className="w-4 h-4" />
