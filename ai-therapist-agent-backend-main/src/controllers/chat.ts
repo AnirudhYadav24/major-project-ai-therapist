@@ -4,7 +4,6 @@ import OpenAI from "openai";
 import { v4 as uuidv4 } from "uuid";
 import { logger } from "../utils/logger";
 import { inngest } from "../inngest/client";
-import { User } from "../models/User";
 import { InngestEvent } from "../types/inngest";
 import { Types } from "mongoose";
 
@@ -22,7 +21,7 @@ const openai = new OpenAI({
 });
 
 /* =====================================================
-   Helpers
+   HELPERS
 ===================================================== */
 const extractOpenAIError = (err: any) => {
   const status = err?.status || err?.response?.status;
@@ -44,8 +43,6 @@ const safeRole = (r: any): "user" | "assistant" =>
 
 /* =====================================================
    LIST ALL CHAT SESSIONS
-   NOTE: your model has NO createdAt/updatedAt.
-   So we only return what exists.
 ===================================================== */
 export const listChatSessions = async (req: Request, res: Response) => {
   try {
@@ -92,8 +89,6 @@ export const createChatSession = async (req: Request, res: Response) => {
     }
 
     const userId = new Types.ObjectId(req.user.id);
-    const user = await User.findById(userId);
-    if (!user) return res.status(404).json({ message: "User not found" });
 
     const session = await ChatSession.create({
       sessionId: uuidv4(),
@@ -117,6 +112,34 @@ export const createChatSession = async (req: Request, res: Response) => {
 };
 
 /* =====================================================
+   GET SINGLE CHAT SESSION
+===================================================== */
+export const getChatSession = async (req: Request, res: Response) => {
+  try {
+    if (!req.user?.id) {
+      return res.status(401).json({ message: "Authentication required" });
+    }
+
+    const { sessionId } = req.params;
+    const userId = new Types.ObjectId(req.user.id);
+
+    const session = await ChatSession.findOne({ sessionId, userId });
+
+    if (!session) {
+      return res.status(404).json({ message: "Session not found" });
+    }
+
+    return res.json(session);
+  } catch (error: any) {
+    logger.error("Get session error:", error);
+    return res.status(500).json({
+      message: "Failed to fetch chat session",
+      error: error?.message || "Unknown error",
+    });
+  }
+};
+
+/* =====================================================
    GET CHAT HISTORY
 ===================================================== */
 export const getChatHistory = async (req: Request, res: Response) => {
@@ -129,11 +152,12 @@ export const getChatHistory = async (req: Request, res: Response) => {
     const userId = new Types.ObjectId(req.user.id);
 
     const session = await ChatSession.findOne({ sessionId, userId });
-    if (!session) return res.status(404).json({ message: "Session not found" });
+    if (!session) {
+      return res.status(404).json({ message: "Session not found" });
+    }
 
     const msgs = Array.isArray(session.messages) ? session.messages : [];
 
-    // send ISO strings to frontend (frontend expects string)
     const normalized = msgs.map((m: any) => ({
       role: safeRole(m.role),
       content: m.content,
@@ -168,33 +192,27 @@ export const sendMessage = async (req: Request, res: Response) => {
     }
 
     const userId = new Types.ObjectId(req.user.id);
-
     const session = await ChatSession.findOne({ sessionId, userId });
-    if (!session) return res.status(404).json({ message: "Session not found" });
+    if (!session) {
+      return res.status(404).json({ message: "Session not found" });
+    }
 
-    // Optional: Log to Inngest (do not block)
     const event: InngestEvent = {
       name: "therapy/session.message",
       data: { message },
     };
+
     try {
       await inngest.send(event);
     } catch (e) {
       logger.warn("Inngest send failed (ignored):", e);
     }
 
-    // Context from DB (only user/assistant roles allowed by your schema)
-    const lastMessages = (Array.isArray(session.messages) ? session.messages : [])
-      .slice(-12)
-      .filter((m: any) => typeof m?.content === "string")
-      .map((m: any) => ({
-        role: safeRole(m.role),
-        content: m.content,
-      }));
+    const lastMessages = session.messages.slice(-12).map((m: any) => ({
+      role: safeRole(m.role),
+      content: m.content,
+    }));
 
-    /* -----------------------------
-       1) ANALYSIS (JSON)
-    ----------------------------- */
     const analysisPrompt = `
 Return ONLY valid JSON.
 
@@ -219,47 +237,25 @@ JSON format:
     };
 
     try {
-      // try response_format; if not supported it will throw, then fallback
-      try {
-        const analysisCompletion = await openai.chat.completions.create({
-          model: OPENAI_MODEL,
-          temperature: 0.2,
-          // @ts-ignore
-          response_format: { type: "json_object" },
-          messages: [
-            { role: "system", content: "You output ONLY valid JSON." },
-            ...lastMessages,
-            { role: "user", content: analysisPrompt },
-          ],
-        });
+      const analysisCompletion = await openai.chat.completions.create({
+        model: OPENAI_MODEL,
+        temperature: 0.2,
+        messages: [
+          { role: "system", content: "You output ONLY valid JSON." },
+          ...lastMessages,
+          { role: "user", content: analysisPrompt },
+        ],
+      });
 
-        const analysisText =
-          analysisCompletion.choices[0]?.message?.content?.trim() || "";
-        analysis = JSON.parse(analysisText);
-      } catch {
-        const analysisCompletion = await openai.chat.completions.create({
-          model: OPENAI_MODEL,
-          temperature: 0.2,
-          messages: [
-            { role: "system", content: "You output ONLY valid JSON." },
-            ...lastMessages,
-            { role: "user", content: analysisPrompt },
-          ],
-        });
-
-        const analysisText =
-          analysisCompletion.choices[0]?.message?.content?.trim() || "";
-        const cleaned = analysisText.replace(/```json|```/g, "").trim();
-        analysis = JSON.parse(cleaned);
-      }
+      const txt =
+        analysisCompletion.choices[0]?.message?.content?.trim() || "";
+      const cleaned = txt.replace(/```json|```/g, "").trim();
+      analysis = JSON.parse(cleaned);
     } catch (err: any) {
       const { status, message: msg } = extractOpenAIError(err);
-      logger.warn("⚠️ Analysis failed, using default analysis:", { status, msg });
+      logger.warn("Analysis failed:", { status, msg });
     }
 
-    /* -----------------------------
-       2) RESPONSE
-    ----------------------------- */
     const responsePrompt = `
 You are an empathetic AI therapist.
 
@@ -279,10 +275,7 @@ Analysis: ${JSON.stringify(analysis)}
         model: OPENAI_MODEL,
         temperature: 0.7,
         messages: [
-          {
-            role: "system",
-            content: "You are a professional, empathetic therapist.",
-          },
+          { role: "system", content: "You are a professional therapist." },
           ...lastMessages,
           { role: "user", content: responsePrompt },
         ],
@@ -292,15 +285,13 @@ Analysis: ${JSON.stringify(analysis)}
         responseCompletion.choices[0]?.message?.content?.trim() || aiResponse;
     } catch (err: any) {
       const { status, message: msg } = extractOpenAIError(err);
-      logger.error("❌ OpenAI response failed:", { status, msg });
-
+      logger.error("OpenAI response failed:", { status, msg });
       return res.status(500).json({
         message: "Error processing message",
         error: msg,
       });
     }
 
-    // ✅ Save to DB (your schema supports metadata)
     const now = new Date();
 
     session.messages.push(
@@ -311,7 +302,6 @@ Analysis: ${JSON.stringify(analysis)}
         timestamp: now,
         metadata: {
           analysis,
-          currentGoal: "Provide support",
           progress: {
             emotionalState: analysis?.emotionalState || "neutral",
             riskLevel: Number(analysis?.riskLevel || 0),
@@ -325,14 +315,6 @@ Analysis: ${JSON.stringify(analysis)}
     return res.json({
       response: aiResponse,
       analysis,
-      metadata: {
-        technique: analysis?.recommendedApproach || "supportive",
-        currentGoal: "Provide support",
-        progress: {
-          emotionalState: analysis?.emotionalState || "neutral",
-          riskLevel: Number(analysis?.riskLevel || 0),
-        },
-      },
     });
   } catch (error: any) {
     logger.error("SEND MESSAGE ERROR:", error);
