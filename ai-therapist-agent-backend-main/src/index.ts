@@ -1,6 +1,5 @@
 import dotenv from "dotenv";
-
-dotenv.config(); // Load environment variables immediately
+dotenv.config();
 
 import express from "express";
 import cors from "cors";
@@ -17,44 +16,50 @@ import { connectDB } from "./utils/db";
 import { inngest } from "./inngest/client";
 import { functions as inngestFunctions } from "./inngest/functions";
 
-// Optional: Debug OPENAI_API_KEY
-console.log("OPENAI_API_KEY:", process.env.OPENAI_API_KEY);
+console.log("OPENAI_API_KEY exists?", Boolean(process.env.OPENAI_API_KEY));
 
-// Create Express app
 const app = express();
 
 // Middleware
-app.use(helmet()); // Security headers
-app.use(cors()); // Enable CORS
-app.use(express.json()); // Parse JSON bodies
-app.use(morgan("dev")); // HTTP request logger
+app.use(helmet());
+app.use(cors({
+  origin: [
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "https://YOUR-VERCEL-FRONTEND.vercel.app"
+  ],
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+}));
+app.use(express.json());
+app.use(morgan("dev"));
 
-// Set up Inngest endpoint
-app.use("/api/inngest", serve({ client: inngest, functions: inngestFunctions }));
+// Routes (define ALL routes BEFORE listen)
+app.get("/", (req, res) => {
+  res.send("AI Therapist API running ✅");
+});
 
-// Routes
 app.get("/health", (req, res) => {
   res.json({ status: "ok", message: "Server is running" });
 });
+
+app.use("/api/inngest", serve({ client: inngest, functions: inngestFunctions }));
 
 app.use("/auth", authRouter);
 app.use("/chat", chatRouter);
 app.use("/api/mood", moodRouter);
 app.use("/api/activity", activityRouter);
 
-// Error handling middleware
+// Error handler last
 app.use(errorHandler);
 
 // Start server
 const startServer = async () => {
   try {
-    await connectDB(); // Connect to MongoDB first
+    await connectDB();
     const PORT = process.env.PORT || 3001;
     app.listen(PORT, () => {
       logger.info(`Server is running on port ${PORT}`);
-      logger.info(
-        `Inngest endpoint available at http://localhost:${PORT}/api/inngest`
-      );
     });
   } catch (error) {
     logger.error("Failed to start server:", error);
